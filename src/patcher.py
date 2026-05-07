@@ -40,6 +40,10 @@ assert len(CONTEXT_OLD_126) == len(CONTEXT_NEW_126), "126 context patch pattern 
 GATE_OLD_132 = b"function H7K(){return!1}"
 GATE_NEW_132 = b"function H7K(){return!0}"
 
+# 2.1.132 变体：使用 F1K 作为 gate（控制 g1K 能否获取模型信息）
+GATE_OLD_132_ALT = b"function F1K(){return!1}"
+GATE_NEW_132_ALT = b"function F1K(){return!0}"
+
 CONTEXT_OLD_132 = (
     b"function TF$(H){if(Y8H())return null;if(uG(H))return null;"
     b"if(G4(H)!==\"claude-sonnet-4-6\")return null;"
@@ -90,6 +94,23 @@ VERSIONS = {
         context_new=CONTEXT_NEW_132,
     ),
 }
+
+
+def get_gate_patterns(version: str) -> tuple[bytes, bytes]:
+    """获取版本的 gate 模式（尝试多种变体）"""
+    info = VERSIONS[version]
+    # 2.1.132 有多种 gate 变体
+    if version == "2.1.132":
+        return (GATE_OLD_132, GATE_NEW_132)
+    return (info.gate_old, info.gate_new)
+
+
+def find_alt_gate(data: bytes, version: str) -> tuple[bytes, bytes] | None:
+    """查找备选 gate 模式"""
+    if version == "2.1.132":
+        if GATE_OLD_132_ALT in data:
+            return (GATE_OLD_132_ALT, GATE_NEW_132_ALT)
+    return None
 
 
 def detect_version(data: bytes) -> str | None:
@@ -153,20 +174,37 @@ def check_status(data: bytes) -> tuple[str, str | None]:
     gate_total = counts["gate_old"] + counts["gate_new"]
     context_total = counts["context_old"] + counts["context_new"]
 
-    # 检查是否已修补
-    if counts["context_new"] == 2 and (counts["gate_new"] == 2 or counts["gate_new"] == 0):
-        return "patched", version
-
-    # 检查是否可修补
-    if counts["context_old"] == 2 and (gate_total == 2 or gate_total == 0):
-        return "patchable", version
-
     # 检查是否使用了错误模式的修补 (R$().max_input_tokens)
     WRONG_CONTEXT_NEW_132 = (
         b"function TF$(H){let $=R$().max_input_tokens;if(!$)return null;"
         b"let q=parseInt($,10);if(!Number.isFinite(q)||q<=0)return null;return q}"
     )
-    if WRONG_CONTEXT_NEW_132 in data and data.count(WRONG_CONTEXT_NEW_132) >= 2:
+    wrong_context_count = data.count(WRONG_CONTEXT_NEW_132)
+
+    # 检查备选 gate 模式 (F1K for 2.1.132)
+    alt_gate = find_alt_gate(data, version)
+    has_alt_gate = alt_gate and data.count(alt_gate[0]) == 2
+    alt_gate_patched = alt_gate and data.count(alt_gate[1]) == 2
+
+    # 检查是否已修补
+    # 情况1：标准模式（context_new=2 且 gate 为已修补或无 gate）
+    if counts["context_new"] == 2 and (counts["gate_new"] == 2 or counts["gate_new"] == 0):
+        # 确保备选 gate 也已修补（如果有）
+        if has_alt_gate and not alt_gate_patched:
+            return "patchable", version
+        return "patched", version
+    # 情况2：备选 gate 模式（F1K）- context 已修补且 alt gate 已修补
+    if counts["context_new"] == 2 and alt_gate_patched:
+        return "patched", version
+
+    # 检查是否可修补（考虑备选 gate）
+    if context_total == 2 and (gate_total == 2 or gate_total == 0):
+        return "patchable", version
+    if wrong_context_count >= 2:
+        return "patchable", version
+    if context_total == 2 and has_alt_gate:
+        return "patchable", version
+    if wrong_context_count >= 2 and has_alt_gate:
         return "patchable", version
 
     return "unsupported", version
@@ -180,13 +218,6 @@ def patch_binary(data: bytes, version: str) -> tuple[bytes, dict[str, int]]:
     gate_total = counts["gate_old"] + counts["gate_new"]
     context_total = counts["context_old"] + counts["context_new"]
 
-    # 对于 2.1.132，gate 可能不存在（已移除或重命名）
-    if gate_total != 2 and gate_total != 0:
-        raise ValueError(
-            f"[{version}] expected 0 or 2 capability gate patterns, found {gate_total} "
-            f"(old={counts['gate_old']}, new={counts['gate_new']})"
-        )
-
     # 检查是否有错误模式的修补需要更正
     WRONG_CONTEXT_NEW_132 = (
         b"function TF$(H){let $=R$().max_input_tokens;if(!$)return null;"
@@ -196,6 +227,19 @@ def patch_binary(data: bytes, version: str) -> tuple[bytes, dict[str, int]]:
 
     if wrong_count > 0:
         context_total = wrong_count
+
+    # 对于 2.1.132，gate 可能不存在（已移除或重命名），尝试查找备选 gate
+    if gate_total != 2 and gate_total != 0:
+        alt_gate = find_alt_gate(data, version)
+        if alt_gate and data.count(alt_gate[0]) == 2:
+            gate_total = 2
+            counts["gate_old"] = 2
+            counts["gate_new"] = 0
+        elif gate_total != 2 and gate_total != 0:
+            raise ValueError(
+                f"[{version}] expected 0 or 2 capability gate patterns, found {gate_total} "
+                f"(old={counts['gate_old']}, new={counts['gate_new']})"
+            )
 
     if context_total != 2:
         raise ValueError(
@@ -207,6 +251,10 @@ def patch_binary(data: bytes, version: str) -> tuple[bytes, dict[str, int]]:
     # 只修补存在的模式
     if counts["gate_old"] > 0:
         patched = patched.replace(info.gate_old, info.gate_new)
+    # 处理备选 gate 模式 (F1K for 2.1.132)
+    alt_gate = find_alt_gate(patched, version)
+    if alt_gate and patched.count(alt_gate[0]) == 2:
+        patched = patched.replace(alt_gate[0], alt_gate[1])
     if counts["context_old"] > 0:
         patched = patched.replace(info.context_old, info.context_new)
     # 更正错误模式的修补
