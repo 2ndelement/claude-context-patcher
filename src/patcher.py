@@ -48,16 +48,16 @@ CONTEXT_OLD_132 = (
     b"let q=parseInt($,10);if(!Number.isFinite(q)||q<=0)return null;return q}"
 )
 
-# 新版本：移除 model 检查，直接使用 max_input_tokens
+# 新版本：使用 g1K(H) 获取模型对象，直接从模型读取 max_input_tokens
 CONTEXT_NEW_132 = (
-    b"function TF$(H){let $=R$().max_input_tokens;if(!$)return null;"
+    b"function TF$(H){let $=g1K(H)?.max_input_tokens;if(!$)return null;"
     b"let q=parseInt($,10);if(!Number.isFinite(q)||q<=0)return null;return q}"
 )
 # 填充到相同长度
 _pad_len_132 = len(CONTEXT_OLD_132) - len(CONTEXT_NEW_132)
 if _pad_len_132 > 0:
     CONTEXT_NEW_132 = (
-        b"function TF$(H){let $=R$().max_input_tokens;if(!$)return null;"
+        b"function TF$(H){let $=g1K(H)?.max_input_tokens;if(!$)return null;"
         b"let q=parseInt($,10);if(!Number.isFinite(q)||q<=0)return null;return q}"
         b"/*" + b"x" * (_pad_len_132 - 4) + b"*/"
     )
@@ -103,6 +103,14 @@ def detect_version(data: bytes) -> str | None:
     for version, info in VERSIONS.items():
         if info.context_old in data:
             return version
+
+    # 检查已修补但使用了错误模式的版本 (R$().max_input_tokens 应改为 g1K(H)?.max_input_tokens)
+    WRONG_CONTEXT_NEW_132 = (
+        b"function TF$(H){let $=R$().max_input_tokens;if(!$)return null;"
+        b"let q=parseInt($,10);if(!Number.isFinite(q)||q<=0)return null;return q}"
+    )
+    if WRONG_CONTEXT_NEW_132 in data:
+        return "2.1.132"
 
     return None
 
@@ -153,6 +161,14 @@ def check_status(data: bytes) -> tuple[str, str | None]:
     if counts["context_old"] == 2 and (gate_total == 2 or gate_total == 0):
         return "patchable", version
 
+    # 检查是否使用了错误模式的修补 (R$().max_input_tokens)
+    WRONG_CONTEXT_NEW_132 = (
+        b"function TF$(H){let $=R$().max_input_tokens;if(!$)return null;"
+        b"let q=parseInt($,10);if(!Number.isFinite(q)||q<=0)return null;return q}"
+    )
+    if WRONG_CONTEXT_NEW_132 in data and data.count(WRONG_CONTEXT_NEW_132) >= 2:
+        return "patchable", version
+
     return "unsupported", version
 
 
@@ -170,10 +186,21 @@ def patch_binary(data: bytes, version: str) -> tuple[bytes, dict[str, int]]:
             f"[{version}] expected 0 or 2 capability gate patterns, found {gate_total} "
             f"(old={counts['gate_old']}, new={counts['gate_new']})"
         )
+
+    # 检查是否有错误模式的修补需要更正
+    WRONG_CONTEXT_NEW_132 = (
+        b"function TF$(H){let $=R$().max_input_tokens;if(!$)return null;"
+        b"let q=parseInt($,10);if(!Number.isFinite(q)||q<=0)return null;return q}"
+    )
+    wrong_count = data.count(WRONG_CONTEXT_NEW_132)
+
+    if wrong_count > 0:
+        context_total = wrong_count
+
     if context_total != 2:
         raise ValueError(
             f"[{version}] expected exactly 2 context lookup patterns, found {context_total} "
-            f"(old={counts['context_old']}, new={counts['context_new']})"
+            f"(old={counts['context_old']}, new={counts['context_new']}, wrong={wrong_count})"
         )
 
     patched = data
@@ -182,6 +209,9 @@ def patch_binary(data: bytes, version: str) -> tuple[bytes, dict[str, int]]:
         patched = patched.replace(info.gate_old, info.gate_new)
     if counts["context_old"] > 0:
         patched = patched.replace(info.context_old, info.context_new)
+    # 更正错误模式的修补
+    if wrong_count > 0:
+        patched = patched.replace(WRONG_CONTEXT_NEW_132, info.context_new)
     return patched, counts
 
 
@@ -196,7 +226,14 @@ def apply_patch(src: Path, backup: bool = True, dry_run: bool = False) -> PatchR
     info = VERSIONS[version]
     counts_before = count_patterns(data, info)
 
-    if status == "patched":
+    # 检查是否有错误模式的修补需要更正
+    WRONG_CONTEXT_NEW_132 = (
+        b"function TF$(H){let $=R$().max_input_tokens;if(!$)return null;"
+        b"let q=parseInt($,10);if(!Number.isFinite(q)||q<=0)return null;return q}"
+    )
+    has_wrong_pattern = data.count(WRONG_CONTEXT_NEW_132) >= 2
+
+    if status == "patched" and not has_wrong_pattern:
         return PatchResult(
             success=True,
             already_patched=True,
@@ -205,7 +242,7 @@ def apply_patch(src: Path, backup: bool = True, dry_run: bool = False) -> PatchR
             counts_after=counts_before,
         )
 
-    if status == "unsupported":
+    if status == "unsupported" and not has_wrong_pattern:
         raise ValueError(f"unsupported binary version at {src}")
 
     patched, _ = patch_binary(data, version)
