@@ -42,13 +42,14 @@ def select_location(locations: list[ClaudeLocation]) -> ClaudeLocation | None:
 def cmd_check(location: Path, verbose: bool) -> int:
     """Check if binary is patched."""
     data = location.read_bytes()
-    status = check_status(data)
+    status, version = check_status(data)
 
     if verbose:
         print(f"Binary: {location}")
+        print(f"Version: {version or 'unknown'}")
         print(f"Status: {status}")
     else:
-        print(status)
+        print(status if status != "unsupported" else f"unsupported (version: {version or 'unknown'})")
 
     return 0 if status == "patched" else 1
 
@@ -56,15 +57,16 @@ def cmd_check(location: Path, verbose: bool) -> int:
 def cmd_patch(location: Path, auto: bool, dry_run: bool, backup: bool) -> int:
     """Apply patch to binary."""
     data = location.read_bytes()
-    status = check_status(data)
+    status, version = check_status(data)
 
     if status == "patched":
-        print(f"Claude Code at {location} is already patched.")
+        print(f"Claude Code at {location} is already patched (v{version}).")
         return 0
 
     if status == "unsupported":
         print(f"Error: Unsupported Claude Code version at {location}", file=sys.stderr)
-        print("This patcher only supports Claude Code 2.1.126", file=sys.stderr)
+        print(f"Detected version: {version or 'unknown'}", file=sys.stderr)
+        print("Supported versions: 2.1.126, 2.1.132", file=sys.stderr)
         return 1
 
     if dry_run:
