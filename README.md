@@ -1,6 +1,6 @@
 # Claude Context Patcher
 
-自动搜索并修补 Claude Code 2.1.126 原生二进制文件，解锁自定义 provider 功能和扩展上下文窗口。
+自动搜索并修补 Claude Code 原生二进制文件，解锁自定义 provider 功能和扩展上下文窗口。支持版本 2.1.126 和 2.1.132。
 
 ## 功能特性
 
@@ -81,47 +81,57 @@ python3 -m src.main --check /path/to/claude
 - Token 使用量计算与校正
 - 剩余上下文容量提醒
 
-### 步骤 1: 安装 Claude Code HUD
+### 步骤 1: 添加插件市场
 
-在 Claude Code 中运行以下命令：
+在 Claude Code 中运行：
 
 ```
-/hud setup
+/plugin marketplace add jarrodwatts/claude-hud
 ```
 
-或在设置中启用 HUD：
+> ⚠️ **Linux 用户注意**: 如果安装失败，需要先设置 TMPDIR：
+> ```bash
+> mkdir -p ~/.cache/tmp && TMPDIR=~/.cache/tmp claude
+> ```
+> 然后在那个会话中运行安装命令。
 
-1. 打开 Claude Code 设置 (Settings)
-2. 找到 HUD 相关选项
-3. 启用 HUD 功能
+### 步骤 2: 安装插件
 
-### 步骤 2: 配置 HUD
-
-创建配置文件 `~/.claude/settings.json`：
-
-```json
-{
-  "hud": {
-    "enabled": true,
-    "position": "bottom",
-    "show_context": true,
-    "show_tokens": true
-  }
-}
+```
+/plugin install claude-hud
 ```
 
-### 步骤 3: 验证安装
+### 步骤 3: 重新加载插件
 
-```bash
-# 检查 patch 状态
-python3 -m src.main --check
-
-# 启动 Claude Code
-claude
-
-# 在 Claude Code 中验证 HUD 是否显示
-/hud status
 ```
+/reload-plugins
+```
+
+### 步骤 4: 配置状态栏
+
+```
+/claude-hud:setup
+```
+
+> ⚠️ **Windows 用户注意**: 如果 setup 提示找不到 JavaScript 运行时，先安装 Node.js：
+> ```powershell
+> winget install OpenJS.NodeJS.LTS
+> ```
+> 然后重启终端再运行 `/claude-hud:setup`。
+
+### 步骤 5: 重启 Claude Code
+
+配置完成后完全退出 Claude Code 并重新启动，HUD 将显示在终端底部。
+
+### 配置 HUD
+
+随时自定义 HUD 显示：
+
+```
+/claude-hud:configure
+```
+
+这将启动引导式配置流程，可以选择预设（Full/Essential/Minimal）、调整显示元素、设置语言等。
 
 ## 工作原理
 
